@@ -178,6 +178,21 @@ class FrequencyAlignmentLayer(nn.Module):
         Returns:
             Tuple (amplitude, phase), masing-masing shape (batch, freq_dim)
         """
+        # === AUTO-ADAPT: jika embed_dim input berbeda dari yang dikonfigurasi ===
+        # Ini menangani kasus di mana hidden size model ternyata berbeda dari
+        # yang kita asumsikan saat inisialisasi (misal MusicGen 1024 vs 768)
+        actual_dim = embeddings.shape[-1]
+        if actual_dim != self.embed_dim:
+            # Lazy-create adapter layer jika belum ada
+            if not hasattr(self, '_input_adapter') or self._input_adapter is None:
+                self._input_adapter = nn.Linear(actual_dim, self.embed_dim).to(
+                    embeddings.device
+                ).to(embeddings.dtype)
+                # Init dengan identity-like (agar tidak merusak gradient di awal)
+                nn.init.xavier_uniform_(self._input_adapter.weight)
+                nn.init.zeros_(self._input_adapter.bias)
+            embeddings = self._input_adapter(embeddings)
+
         # Proyeksi bersama
         shared = self.shared_projector(embeddings)
         
@@ -188,6 +203,55 @@ class FrequencyAlignmentLayer(nn.Module):
         phase = self.phase_head(shared) * self.phase_scale
         
         return amplitude, phase
+
+
+# ============================================================
+# UTILITY: Auto-detect embed_dim dari model apapun
+# ============================================================
+
+def auto_detect_embed_dim(model: "nn.Module", model_name: str = "") -> int:
+    """
+    Auto-detect hidden size / embed_dim dari model HuggingFace manapun.
+    
+    Urutan pengecekan:
+    1. Atribut config model (paling akurat)
+    2. Dimensi parameter embedding/projection layer
+    3. Fallback ke 768 (BERT-standard)
+    
+    Args:
+        model    : Model PyTorch / HuggingFace
+        model_name: Nama model untuk logging
+        
+    Returns:
+        embed_dim (int)
+        
+    Contoh:
+        >>> embed_dim = auto_detect_embed_dim(whisper_model, "whisper-small")
+        >>> align = FrequencyAlignmentLayer(embed_dim, freq_dim=512)
+    """
+    # Coba dari config HuggingFace
+    if hasattr(model, 'config'):
+        cfg = model.config
+        for attr in ['hidden_size', 'd_model', 'n_embd', 'embed_dim',
+                     'encoder_hidden_size', 'decoder_hidden_size',
+                     'hidden_dim', 'model_dim']:
+            val = getattr(cfg, attr, None)
+            if val is not None and isinstance(val, int) and val > 0:
+                print(f"[auto_detect_embed_dim] '{model_name}' → {attr} = {val}")
+                return val
+
+    # Coba dari nama parameter yang umum
+    for name, param in model.named_parameters():
+        for keyword in ['embed', 'hidden', 'proj', 'encoder']:
+            if keyword in name.lower() and len(param.shape) == 2:
+                dim = max(param.shape)
+                if 64 <= dim <= 8192:  # Range yang masuk akal
+                    print(f"[auto_detect_embed_dim] '{model_name}' → param '{name}' shape {param.shape} → dim {dim}")
+                    return dim
+
+    # Fallback
+    print(f"[auto_detect_embed_dim] '{model_name}' → fallback ke 768")
+    return 768
 
 
 # ============================================================
