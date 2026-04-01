@@ -5,7 +5,7 @@ Konverter Gambar → FrequencyTensor menggunakan 2D DFT
 """
 import torch
 import numpy as np
-from typing import Any, Union
+from typing import Any, Union, Optional, List, Tuple, Dict
 from resonait.converters.base import BaseConverter
 from resonait.core.frequency_space import FrequencyTensor, Modality
 
